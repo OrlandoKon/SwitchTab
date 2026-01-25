@@ -74,7 +74,11 @@ def self_supervised_learning_with_switchtab(data, batch_size, feature_size, num_
     # Pre-training loop
     print_interval = 50
     for epoch in range(1000):
-        for x1_batch, x2_batch in zip(dataloader, dataloader):
+        for batch1, batch2 in zip(dataloader, dataloader):
+            # Unpack data if it contains labels (handle list/tuple from TensorDataset)
+            x1_batch = batch1[0] if isinstance(batch1, (list, tuple)) else batch1
+            x2_batch = batch2[0] if isinstance(batch2, (list, tuple)) else batch2
+
             # Feature corruption
             x1_corrupted = feature_corruption(x1_batch)
             x2_corrupted = feature_corruption(x2_batch)

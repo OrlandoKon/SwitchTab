@@ -1,0 +1,8 @@
+name: switch
+channels:
+  - pytorch
+  - defaults
+dependencies:
+  - python=3.8
+  - pytorch
+  - pip
