@@ -6,9 +6,10 @@ from preprocess.feature_preprocess import FeaturePreprocessor
 
 # Dataset implementation
 class FlowDataset(Dataset):
-    def __init__(self, data=None, is_train=True):
+    def __init__(self, cfg=None, data=None, is_train=True):
         self.is_train = is_train
-        self.preprocessor = FeaturePreprocessor()
+        self.preprocessor = FeaturePreprocessor(cfg) # Pass cfg
+        self.cfg = cfg
         
         # If no data provided, generate mock encrypted flow data
         if data is None:

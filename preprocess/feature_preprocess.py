@@ -1,13 +1,17 @@
 import numpy as np
 import torch
 import math
+from config import Config
 
 class FeaturePreprocessor:
-    def __init__(self):
+    def __init__(self, cfg=None):
+        if cfg is None:
+            cfg = Config()
+        self.cfg = cfg
         # Constants
-        self.K = 20
-        self.MAX_LEN = 1500 # For histogram
-        self.DELTA_T_MAX = 1.0 # For histogram, assumed
+        self.K = cfg.K
+        self.MAX_LEN = 1500 # Keep or move to config if needed (e.g. cfg.max_length)
+        self.DELTA_T_MAX = 1.0 
         
     def process_flow(self, flow):
         """
