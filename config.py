@@ -12,6 +12,7 @@ class Config:
         self.batch_size = 64
         self.epochs = 100
         self.learning_rate = 0.001
+        self.loss_alpha = 0.3 # Hyperparameter for supervised loss weight
         
         # SwitchTab Model settings
         self.model_dim = 128
