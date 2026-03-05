@@ -2,20 +2,33 @@ import torch
 from torch.utils.data import Dataset
 import numpy as np
 import random
+import os
 from preprocess.feature_preprocess import FeaturePreprocessor
+from .pcap_loader import load_encrypted_traffic_dataset
 
 # Dataset implementation
 class FlowDataset(Dataset):
-    def __init__(self, cfg=None, data=None, is_train=True):
-        self.is_train = is_train
-        self.preprocessor = FeaturePreprocessor(cfg) # Pass cfg
+    def __init__(self, cfg=None, split='train', data_dir=None):
+        self.split = split
+        self.preprocessor = FeaturePreprocessor(cfg)
         self.cfg = cfg
+        self.label_map = {}
         
-        # If no data provided, generate mock encrypted flow data
-        if data is None:
-            self.data = self._generate_mock_data(1000 if is_train else 200)
+        # If data directory is provided, load from disk
+        if data_dir is not None and os.path.exists(data_dir):
+            print(f"Loading {split} data from {data_dir}...")
+            # Load real pcap data or cached .pt files based on split
+            self.data, self.label_map = load_encrypted_traffic_dataset(data_dir, split=split)
+            
+            # Update num_classes in config if possible
+            if self.label_map and cfg is not None:
+                 cfg.num_classes = len(self.label_map)
+                 print(f"Updated num_classes to {cfg.num_classes}")
+
+        # Fallback to mock data
         else:
-            self.data = data
+            print("No data provided found. Generating mock data.")
+            self.data = self._generate_mock_data(1000 if split == 'train' else 200)
             
     def _generate_mock_data(self, count):
         data = []

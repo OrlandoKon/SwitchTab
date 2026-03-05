@@ -3,7 +3,8 @@ import torch
 class Config:
     def __init__(self):
         # --- Data Preprocessing ---
-        self.num_classes = 2 # Binary classification for demo or adjust as needed
+        self.num_classes = 16 # Placeholder, will be updated by dataset
+        self.data_dir = '/root/Demo/SwitchTab/data/ISCX-VPN-2016'
         
         # Stage 1: Sequence Features
         self.K = 20  # Max packets per flow
@@ -35,7 +36,7 @@ class Config:
         self.batch_size = 128
         self.epochs = 50   # Training epochs
         self.learning_rate = 0.001
-        self.loss_alpha = 0.5   # Weight for reconstruction loss (lambda_recon in spec)
+        self.loss_alpha = 0.3   # Weight for classification loss (L_total = L_recon + alpha * L_cls)
         
         # Device configuration
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

@@ -12,11 +12,12 @@ class FlowPositionalEncoding(nn.Module):
         div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
         pe[:, 0::2] = torch.sin(position * div_term)
         pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0).transpose(0, 1)
+        pe = pe.unsqueeze(0)
         self.register_buffer('pe', pe)
 
     def forward(self, x):
-        x = x + self.pe[:x.size(0), :]
+        # x: [batch, seq_len, d_model]
+        x = x + self.pe[:, :x.size(1), :]
         return self.dropout(x)
 
 class FlowSequenceEncoder(nn.Module):
@@ -34,7 +35,8 @@ class FlowSequenceEncoder(nn.Module):
             d_model=embed_dim, 
             nhead=num_heads, 
             dim_feedforward=ffn_dim, 
-            dropout=dropout
+            dropout=dropout,
+            batch_first=True
         )
         self.sequence_encoder_layers = nn.TransformerEncoder(encoder_layers, num_layers=num_layers)
         
@@ -44,22 +46,14 @@ class FlowSequenceEncoder(nn.Module):
         """
         x: [batch, seq_len, input_dim] = [batch, 20, 5]
         """
-        # Transpose for Transformer: [seq_len, batch, input_dim]
-        if x.dim() == 3:
-            x = x.transpose(0, 1)
-            
         # Linear Projection
-        x = self.input_projection(x) # [seq_len, batch, embed_dim]
+        x = self.input_projection(x) # [batch, seq_len, embed_dim]
         
         # Add PE
         x = self.pos_encoder(x)
         
         # Transformer Encoder
-        output = self.sequence_encoder_layers(x) # [seq_len, batch, embed_dim]
-        
-        # Mean Pooling
-        # Transpose back: [batch, seq_len, embed_dim]
-        output = output.transpose(0, 1)
+        output = self.sequence_encoder_layers(x) # [batch, seq_len, embed_dim]
         
         # Simple mean pooling over sequence dimension
         sequence_embedding = torch.mean(output, dim=1) # [batch, embed_dim]
