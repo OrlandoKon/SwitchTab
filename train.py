@@ -92,8 +92,8 @@ def train():
             logits2 = outputs['logits2']
             recon_loss = outputs['recon_loss']
             
-            # Calculate classification loss
-            cls_loss = 0.5 * (criterion_cls(logits1, lbl1) + criterion_cls(logits2, lbl2))
+            # Calculate classification loss according to: L_cls = - (y1 log(y^1) + y2 log(y^2))
+            cls_loss = criterion_cls(logits1, lbl1) + criterion_cls(logits2, lbl2)
             
             # Total loss: L_recon + alpha * L_cls
             loss = recon_loss + cfg.loss_alpha * cls_loss

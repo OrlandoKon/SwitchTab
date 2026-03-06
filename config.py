@@ -34,9 +34,13 @@ class Config:
         
         # --- Training Hyperparameters ---
         self.batch_size = 128
-        self.epochs = 50   # Training epochs
-        self.learning_rate = 0.001
+        self.epochs = 200   # Fine-tuning stage max epochs
+        self.learning_rate = 0.001 # Adam learning rate for fine-tuning
         self.loss_alpha = 0.3   # Weight for classification loss (L_total = L_recon + alpha * L_cls)
+        
+        # Pre-training settings (Optional, if implementing pre-training later)
+        self.pretrain_epochs = 1000
+        self.pretrain_lr = 0.0003
         
         # Device configuration
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
