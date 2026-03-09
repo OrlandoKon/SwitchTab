@@ -2,60 +2,40 @@ import torch
 import torch.nn as nn
 import math
 
-class FlowPositionalEncoding(nn.Module):
-    def __init__(self, d_model, max_len=20, dropout=0.1):
-        super(FlowPositionalEncoding, self).__init__()
-        self.dropout = nn.Dropout(p=dropout)
-
-        pe = torch.zeros(max_len, d_model)
-        position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-        div_term = torch.exp(torch.arange(0, d_model, 2).float() * (-math.log(10000.0) / d_model))
-        pe[:, 0::2] = torch.sin(position * div_term)
-        pe[:, 1::2] = torch.cos(position * div_term)
-        pe = pe.unsqueeze(0)
-        self.register_buffer('pe', pe)
-
-    def forward(self, x):
-        # x: [batch, seq_len, d_model]
-        x = x + self.pe[:, :x.size(1), :]
-        return self.dropout(x)
-
 class FlowSequenceEncoder(nn.Module):
     def __init__(self, input_dim=5, embed_dim=64, num_heads=4, num_layers=2, ffn_dim=128, dropout=0.1, max_len=20):
         super(FlowSequenceEncoder, self).__init__()
-        
-        # Linear projection: 5 -> 64
-        self.input_projection = nn.Linear(input_dim, embed_dim)
-        
-        # Positional Encoding
-        self.pos_encoder = FlowPositionalEncoding(embed_dim, max_len=max_len, dropout=dropout)
-        
-        # Transformer Encoder Layers
-        encoder_layers = nn.TransformerEncoderLayer(
-            d_model=embed_dim, 
-            nhead=num_heads, 
-            dim_feedforward=ffn_dim, 
-            dropout=dropout,
-            batch_first=True
-        )
-        self.sequence_encoder_layers = nn.TransformerEncoder(encoder_layers, num_layers=num_layers)
-        
+        self.max_len = max_len
         self.embed_dim = embed_dim
+        # No encoder layers needed as we are just replacing features
 
-    def forward(self, x):
+    def forward(self, x, stats):
         """
-        x: [batch, seq_len, input_dim] = [batch, 20, 5]
+        x: [batch, seq_len, 5]
+        stats: [batch, 64] containing 55 valid features and 9 padded zeros
         """
-        # Linear Projection
-        x = self.input_projection(x) # [batch, seq_len, embed_dim]
+        batch_size, seq_len, _ = x.size()
         
-        # Add PE
-        x = self.pos_encoder(x)
+        # Expand stats to match sequence length: [batch, seq_len, 64]
+        seq_stats = stats.unsqueeze(1).expand(-1, seq_len, -1)
         
-        # Transformer Encoder
-        output = self.sequence_encoder_layers(x) # [batch, seq_len, embed_dim]
+        # Generate relative positions: [batch, seq_len, 1]
+        positions = torch.arange(0, seq_len, dtype=torch.float32, device=x.device)
+        rel_positions = positions / self.max_len
+        rel_positions = rel_positions.unsqueeze(0).unsqueeze(2).expand(batch_size, -1, 1)
         
-        # Simple mean pooling over sequence dimension
-        sequence_embedding = torch.mean(output, dim=1) # [batch, embed_dim]
+        # Reconstruct the 64-dim vector for each packet
+        # 0-54: Original stats
+        # 55-59: Sequence features (from x)
+        # 60: Relative position
+        # 61-63: Padding (zeros)
         
-        return sequence_embedding
+        part_stats = seq_stats[:, :, :55] # [batch, seq_len, 55]
+        part_pad = torch.zeros(batch_size, seq_len, 3, device=x.device)
+        
+        combined = torch.cat([part_stats, x, rel_positions, part_pad], dim=-1) # [batch, seq_len, 64]
+        
+        # Mean pooling to get flow representation [batch, 64]
+        flow_embedding = torch.mean(combined, dim=1)
+        
+        return flow_embedding

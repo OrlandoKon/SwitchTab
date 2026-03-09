@@ -2,39 +2,39 @@ import torch
 
 class Config:
     def __init__(self):
+        # Logging
+        self.log_dir = './log'
+
         # --- Data Preprocessing ---
         self.num_classes = 16 # Placeholder, will be updated by dataset
         self.data_dir = '/root/Demo/SwitchTab/data/ISCX-VPN-2016'
         
-        # Stage 1: Sequence Features
+        # Flow Parameters
         self.K = 20  # Max packets per flow
-        self.packet_feature_dim = 5  # [length, direction, delta_t, log_length, burst_flag]
         
-        # Stage 2: Statistical Features
-        self.stat_feature_dim = 64  # Output dimension of statistical extractor
+        # Packet Feature Construction
+        self.seq_feature_dim = 5  # [length, direction, delta_t, log_length, burst_flag]
+        self.stat_feature_dim = 55 # First 55 features from statistical extractor (64 total - 9 padding)
+        # self.pos_feature_dim = 1   # Relative position feature (removed)
         
-        # Histograms
-        self.hist_bins_len = 16
-        self.hist_bins_time = 16
+        # Total packet feature dimension input to FlowEmbedding: 5 + 55 = 60
+        self.packet_input_dim = self.seq_feature_dim + self.stat_feature_dim
         
         # --- Model Architecture ---
-        # Transformer (Stage 1)
-        self.embed_dim = 64
-        self.trans_num_heads = 4
-        self.trans_num_layers = 2
-        self.trans_ffn_dim = 128
+        # FlowEmbedding (Stage 1)
+        self.flow_embed_dim = 128
+        self.flow_num_heads = 4
+        self.flow_num_layers = 2
+        self.flow_ffn_dim = 256
         self.dropout = 0.1
         
-        # Fusion
-        self.fusion_output_dim = 128  # Dimension after fusing Seq + Stat
-        
-        # SwitchTab Core
-        self.switchtab_input_dim = 128 # Must match fusion_output_dim
+        # SwitchTab Core (Feature size matches FlowEmbedding output)
+        self.switchtab_input_dim = 128 
         self.switchtab_num_heads = 2   # For SwitchTab's internal Encoder
         
         # --- Training Hyperparameters ---
         self.batch_size = 128
-        self.epochs = 200   # Fine-tuning stage max epochs
+        self.epochs = 50   # Fine-tuning stage max epochs
         self.learning_rate = 0.001 # Adam learning rate for fine-tuning
         self.loss_alpha = 0.3   # Weight for classification loss (L_total = L_recon + alpha * L_cls)
         

@@ -1,7 +1,93 @@
 import torch
 import torch.nn as nn
-from .sequence_encoder import FlowSequenceEncoder
-from .statistical_extractor import StatisticalFeatureExtractor
+# from .sequence_encoder import FlowSequenceEncoder
+# from .statistical_extractor import StatisticalFeatureExtractor
+
+# --- New Module ---
+class FlowEmbedding(nn.Module):
+    def __init__(self, input_dim=60, embed_dim=128, token_dim=64, max_len=20, num_heads=4, num_layers=2, ffn_dim=256, dropout=0.1):
+        super(FlowEmbedding, self).__init__()
+        
+        # --- Feature Tokenizer ---
+        # W_j for each feature j (input_dim features)
+        self.feature_weights = nn.Parameter(torch.Tensor(input_dim, token_dim))
+        # b_j for each feature j
+        self.feature_biases = nn.Parameter(torch.Tensor(input_dim, token_dim))
+        
+        # Initialize weights and biases
+        nn.init.xavier_uniform_(self.feature_weights)
+        nn.init.zeros_(self.feature_biases)
+
+        # Final projection: Linear(d -> embed_dim)
+        # Note: Aggregate over feature dimension, so input to linear is d (token_dim)
+        self.input_proj = nn.Linear(token_dim, embed_dim)
+        
+        # Learnable CLS token: [1, 1, 128]
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
+        
+        # Learnable Positional Embeddings: [1, K+1, 128]
+        # max_len is K, so sequence length becomes K+1
+        self.pos_embed = nn.Parameter(torch.zeros(1, max_len + 1, embed_dim))
+        
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=embed_dim, 
+            nhead=num_heads, 
+            dim_feedforward=ffn_dim, 
+            dropout=dropout, 
+            batch_first=True
+        )
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        
+        # Initialize parameters properly (optional but good practice)
+        nn.init.normal_(self.cls_token, std=0.02)
+        nn.init.normal_(self.pos_embed, std=0.02)
+
+    def forward(self, x):
+        """
+        x: [B, K, 60]
+        Output: [B, 128] (CLS token embedding)
+        """
+        B, K, F = x.shape
+        
+        # 1. Feature Tokenization
+        # T_j = b_j + x_j * W_j
+        # x shape: [B, K, F] -> [B, K, F, 1] for broadcasting
+        x_expanded = x.unsqueeze(-1)
+        
+        # Weights/Biases: [F, d] -> [1, 1, F, d] for broadcasting
+        W = self.feature_weights.view(1, 1, F, -1)
+        b = self.feature_biases.view(1, 1, F, -1)
+        
+        # Compute tokens: [B, K, F, d]
+        tokens = b + x_expanded * W
+        
+        # 2. Aggregate Tokens
+        # Mean over feature dimension F: [B, K, F, d] -> [B, K, d]
+        packet_emb = tokens.mean(dim=2)
+        
+        # 3. Project to Transformer Dimension
+        # [B, K, d] -> [B, K, embed_dim]
+        x = self.input_proj(packet_emb)
+        
+        # Expand CLS token: [1, 1, 128] -> [B, 1, 128]
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        
+        # Concatenate CLS token with projected packet features: [B, K+1, 128]
+        x = torch.cat((cls_tokens, x), dim=1)
+        
+        # Add positional embeddings
+        seq_len = x.size(1)
+        # Safe slicing if input is shorter, though max_len should match cfg.K
+        if seq_len <= self.pos_embed.size(1):
+            x = x + self.pos_embed[:, :seq_len, :]
+        else:
+             x = x + self.pos_embed[:, :self.pos_embed.size(1), :]
+        
+        # Transformer Encoder
+        x = self.transformer_encoder(x)
+        
+        # Extract CLS token (index 0)
+        return x[:, 0, :]
 
 # --- SwitchTab Sub-modules copied/adapted for FlowSwitch ---
 
@@ -16,8 +102,9 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         # x: [B, D] -> [B, 1, D] for Transformer (if batch_first=True)
-        x_unsqueezed = x.unsqueeze(1)
-        return self.transformer_layers(x_unsqueezed).squeeze(1)
+        if x.dim() == 2:
+            x = x.unsqueeze(1)
+        return self.transformer_layers(x).squeeze(1)
 
 class Projector(nn.Module):
     def __init__(self, feature_size, output_size):
@@ -51,24 +138,27 @@ class FlowSwitch(nn.Module):
     def __init__(self, cfg):
         super(FlowSwitch, self).__init__()
         
+        self.cfg = cfg
+        self.max_len = cfg.K
+        
         # --- Section 1: Feature Extraction ---
-        self.sequence_encoder = FlowSequenceEncoder(
-            input_dim=cfg.packet_feature_dim,
-            embed_dim=cfg.embed_dim,
-            num_heads=cfg.trans_num_heads,
-            num_layers=cfg.trans_num_layers,
-            ffn_dim=cfg.trans_ffn_dim,
-            dropout=cfg.dropout,
-            max_len=cfg.K
+        # FlowEmbedding integration
+        self.flow_embedding = FlowEmbedding(
+            input_dim=cfg.packet_input_dim, # 61 for current config
+            embed_dim=cfg.flow_embed_dim,    # 128
+            token_dim=64, # Assuming a default token_dim or add to config
+            max_len=cfg.K,
+            num_heads=cfg.flow_num_heads,
+            num_layers=cfg.flow_num_layers,
+            ffn_dim=cfg.flow_ffn_dim,
+            dropout=cfg.dropout
         )
         
-        self.stat_extractor = StatisticalFeatureExtractor(input_dim=cfg.stat_feature_dim, output_dim=cfg.stat_feature_dim)
-        
-        # self.fusion_norm = nn.LayerNorm(cfg.fusion_output_dim) # Replaced with Min-Max Scaling
         self.fusion_dropout = nn.Dropout(cfg.dropout)
         
         # --- Section 2: SwitchTab Components (Flattened) ---
-        feature_size = cfg.switchtab_input_dim
+        # Feature size matches FlowEmbedding output (128)
+        feature_size = cfg.flow_embed_dim
         num_classes = cfg.num_classes
         num_heads = cfg.switchtab_num_heads
         
@@ -90,17 +180,36 @@ class FlowSwitch(nn.Module):
         self.mse_loss = nn.MSELoss()
 
     def extract_features(self, sequence_input, stat_input):
-        seq_emb = self.sequence_encoder(sequence_input)
-        stat_emb = self.stat_extractor(stat_input)
-        combined = torch.cat([seq_emb, stat_emb], dim=1)
+        """
+        Integrates logic from FlowSequenceEncoder directly.
+        sequence_input: [B, K, 5]
+        stat_input: [B, 64]
+        """
+        batch_size, seq_len, _ = sequence_input.size()
+        
+        # Expand stats to match sequence length: [B, K, 64]
+        seq_stats = stat_input.unsqueeze(1).expand(-1, seq_len, -1)
+        
+        # Reconstruct the vector for each packet using config dimensions
+        # 0 : cfg.stat_feature_dim  -> Original stats 
+        # +-> cfg.seq_feature_dim   -> Sequence features
+        
+        stat_dim = self.cfg.stat_feature_dim
+        part_stats = seq_stats[:, :, :stat_dim] # [B, K, 55]
+        
+        # Concatenate: 55 + 5 = 60 (or from cfg)
+        combined = torch.cat([part_stats, sequence_input], dim=-1) # [B, K, 60]
         
         # Min-Max Scaling (Per-sample)
-        min_val, _ = torch.min(combined, dim=1, keepdim=True)
-        max_val, _ = torch.max(combined, dim=1, keepdim=True)
-        x = (combined - min_val) / (max_val - min_val + 1e-8)
+        min_val, _ = torch.min(combined, dim=-1, keepdim=True)
+        max_val, _ = torch.max(combined, dim=-1, keepdim=True)
+        combined = (combined - min_val) / (max_val - min_val + 1e-8)
         
-        # x = self.fusion_norm(combined) 
-        x = self.fusion_dropout(x)
+        # Pass through FlowEmbedding to get [B, 128]
+        flow_embedding = self.flow_embedding(combined)
+        
+        # Apply dropout
+        x = self.fusion_dropout(flow_embedding)
         return x
 
     def forward(self, sequence_input1, stat_input1, sequence_input2=None, stat_input2=None):
