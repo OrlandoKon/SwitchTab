@@ -5,7 +5,7 @@ import torch.nn as nn
 
 # --- New Module ---
 class FlowEmbedding(nn.Module):
-    def __init__(self, input_dim=60, embed_dim=128, token_dim=64, max_len=20, num_heads=4, num_layers=2, ffn_dim=256, dropout=0.1):
+    def __init__(self, input_dim=60, embed_dim=128, token_dim=64):
         super(FlowEmbedding, self).__init__()
         
         # --- Feature Tokenizer ---
@@ -22,30 +22,10 @@ class FlowEmbedding(nn.Module):
         # Note: Aggregate over feature dimension, so input to linear is d (token_dim)
         self.input_proj = nn.Linear(token_dim, embed_dim)
         
-        # Learnable CLS token: [1, 1, 128]
-        self.cls_token = nn.Parameter(torch.zeros(1, 1, embed_dim))
-        
-        # Learnable Positional Embeddings: [1, K+1, 128]
-        # max_len is K, so sequence length becomes K+1
-        self.pos_embed = nn.Parameter(torch.zeros(1, max_len + 1, embed_dim))
-        
-        encoder_layer = nn.TransformerEncoderLayer(
-            d_model=embed_dim, 
-            nhead=num_heads, 
-            dim_feedforward=ffn_dim, 
-            dropout=dropout, 
-            batch_first=True
-        )
-        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
-        
-        # Initialize parameters properly (optional but good practice)
-        nn.init.normal_(self.cls_token, std=0.02)
-        nn.init.normal_(self.pos_embed, std=0.02)
-
     def forward(self, x):
         """
         x: [B, K, 60]
-        Output: [B, 128] (CLS token embedding)
+        Output: [B, K, 128] (Sequence embeddings)
         """
         B, K, F = x.shape
         
@@ -69,42 +49,52 @@ class FlowEmbedding(nn.Module):
         # [B, K, d] -> [B, K, embed_dim]
         x = self.input_proj(packet_emb)
         
-        # Expand CLS token: [1, 1, 128] -> [B, 1, 128]
-        cls_tokens = self.cls_token.expand(B, -1, -1)
-        
-        # Concatenate CLS token with projected packet features: [B, K+1, 128]
-        x = torch.cat((cls_tokens, x), dim=1)
-        
-        # Add positional embeddings
-        seq_len = x.size(1)
-        # Safe slicing if input is shorter, though max_len should match cfg.K
-        if seq_len <= self.pos_embed.size(1):
-            x = x + self.pos_embed[:, :seq_len, :]
-        else:
-             x = x + self.pos_embed[:, :self.pos_embed.size(1), :]
-        
-        # Transformer Encoder
-        x = self.transformer_encoder(x)
-        
-        # Extract CLS token (index 0)
-        return x[:, 0, :]
+        return x
 
 # --- SwitchTab Sub-modules copied/adapted for FlowSwitch ---
 
 class Encoder(nn.Module):
-    def __init__(self, feature_size, num_heads=2):
+    def __init__(self, feature_size, max_len, num_heads=2, num_layers=3, dropout=0.1):
         super(Encoder, self).__init__()
-        self.transformer_layers = nn.Sequential(
-            nn.TransformerEncoderLayer(d_model=feature_size, nhead=num_heads, batch_first=True),
-            nn.TransformerEncoderLayer(d_model=feature_size, nhead=num_heads, batch_first=True),
-            nn.TransformerEncoderLayer(d_model=feature_size, nhead=num_heads, batch_first=True)
-        )
+        self.feature_size = feature_size
+        
+        # Learnable CLS token
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, feature_size))
+        
+        # Position Embeddings
+        self.pos_embed = nn.Parameter(torch.zeros(1, max_len + 1, feature_size)) # +1 for CLS
+        nn.init.normal_(self.cls_token, std=0.02)
+        nn.init.normal_(self.pos_embed, std=0.02)
+
+        # Transformer
+        encoder_layer = nn.TransformerEncoderLayer(d_model=feature_size, nhead=num_heads, batch_first=True, dropout=dropout)
+        self.transformer_layers = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
 
     def forward(self, x):
-        # x: [B, D] -> [B, 1, D] for Transformer (if batch_first=True)
-        if x.dim() == 2:
-            x = x.unsqueeze(1)
-        return self.transformer_layers(x).squeeze(1)
+        # x: [B, K, D]
+        B, K, D = x.shape
+        
+        # Expand CLS token: [B, 1, D]
+        cls_tokens = self.cls_token.expand(B, -1, -1)
+        
+        # Concatenate: [B, K+1, D]
+        x = torch.cat((cls_tokens, x), dim=1)
+        
+        # Add Pos Embedding
+        seq_len = x.size(1)
+        # Safe slicing of pos_embed to match sequence length
+        # Assuming max_len covers typical usage, or simple truncation of pos_embed
+        if seq_len <= self.pos_embed.size(1):
+             x = x + self.pos_embed[:, :seq_len, :]
+        else:
+             # Fallback if sequence is longer than max_len (though cfg should prevent this)
+             x = x + self.pos_embed[:, :self.pos_embed.size(1), :] 
+        
+        # Transform
+        x = self.transformer_layers(x)
+        
+        # Return CLS
+        return x[:, 0, :]
 
 class Projector(nn.Module):
     def __init__(self, feature_size, output_size):
@@ -146,12 +136,7 @@ class FlowSwitch(nn.Module):
         self.flow_embedding = FlowEmbedding(
             input_dim=cfg.packet_input_dim, # 61 for current config
             embed_dim=cfg.flow_embed_dim,    # 128
-            token_dim=64, # Assuming a default token_dim or add to config
-            max_len=cfg.K,
-            num_heads=cfg.flow_num_heads,
-            num_layers=cfg.flow_num_layers,
-            ffn_dim=cfg.flow_ffn_dim,
-            dropout=cfg.dropout
+            token_dim=64 # Assuming a default token_dim or add to config
         )
         
         self.fusion_dropout = nn.Dropout(cfg.dropout)
@@ -163,7 +148,7 @@ class FlowSwitch(nn.Module):
         num_heads = cfg.switchtab_num_heads
         
         # Encoder
-        self.encoder = Encoder(feature_size, num_heads)
+        self.encoder = Encoder(feature_size, max_len=cfg.K, num_heads=num_heads, num_layers=cfg.flow_num_layers, dropout=cfg.dropout)
         
         # Projectors
         half_feature_size = feature_size // 2
